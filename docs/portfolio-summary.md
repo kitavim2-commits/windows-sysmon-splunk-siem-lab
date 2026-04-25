@@ -87,31 +87,9 @@ This closed the loop on the full SOC detection workflow — from policy configur
 
 ---
 
-## Talking Points for Interviews
-
-### Q: Why 4688 AND Sysmon? Aren't they redundant?
-> They overlap but Sysmon is significantly richer. 4688 gives you process name, parent name, user, and (if enabled) command line. Sysmon Event 1 adds file hashes (MD5/SHA256/IMPHASH), parent command line (not just the name), current directory, integrity level, and a unique ProcessGuid for cross-event correlation. For detection engineering Sysmon wins, but 4688 is native on domain systems, so knowing both matters.
-
-### Q: Walk me through how you validated your detections.
-> I didn't just write queries and trust them. I installed Atomic Red Team, reviewed tests with `-ShowDetails` before running any of them — that's critical, Atomic Test #1 for T1059.001 is literal Mimikatz — and then executed a benign encoded PowerShell command to simulate the obfuscation technique. Ran my detection query in Splunk, confirmed the event fired within seconds with full forensic context. If the query hadn't matched, I'd tune until it did, then test for false positives against normal activity. That's the detect-simulate-verify-tune loop.
-
-### Q: Tell me about a time things went sideways.
-> I ran an Atomic Red Team test without reading the details carefully and it turned out to be Mimikatz. Instead of panicking, I used my SIEM to do real incident response — queried for `DownloadString` in process command lines to check if the cradle ran, queried Sysmon Event 3 for network connections to `githubusercontent.com` to see if the payload was pulled. Both came back empty, which confirmed the download was blocked upstream by Malwarebytes. I documented the exercise, ran the Atomic cleanup command, and kept going. Honestly, it was more valuable than a clean session would have been — I got to practice authentic IR triage on my own box.
-
-### Q: What's your detection philosophy?
-> Start from MITRE ATT&CK and pick techniques your environment is most exposed to. Write a detection, generate telemetry that should trigger it, verify the fire, then tune against normal activity to suppress false positives. A detection that's 100% accurate but never runs is useless; one that fires constantly gets ignored. Calibrate against real data, not theory.
-
-### Q: What was your biggest troubleshooting win?
-> Sysmon events were indexed but my field-based detections weren't firing. Turned out `renderXml = true` in `inputs.conf` was storing events as raw XML blobs without field extraction because I hadn't installed the Splunk Add-on for Sysmon. Diagnosed by searching raw event text — that found the event, which proved data was flowing, which told me the problem was parsing not ingestion. Workaround: search XML text directly. Proper fix: install the Sysmon add-on, which makes all fields natively searchable. Classic "the data is there, the extractor isn't" situation.
-
-### Q: What's next for the lab?
-> Splunk Add-on for Sysmon so field extraction is clean, then a dashboard for real-time visibility, then broader ATT&CK coverage — credential access (T1003) and persistence (T1547) are the next targets. I also want to author Sigma rules so my detections are portable across SIEMs, and eventually add a second host with a Universal Forwarder to simulate multi-endpoint correlation.
-
----
-
 ## Links
 
-- **GitHub repository:** *[add your repo URL](https://github.com/kitavim2-commits/windows-sysmon-splunk-siem-lab/new/main)*
+- **GitHub repository:** *[add your repo URL](https://github.com/kitavim2-commits/windows-sysmon-splunk-siem-lab/new/main)]*
 
 ---
 
