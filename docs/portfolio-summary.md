@@ -89,7 +89,7 @@ This closed the loop on the full SOC detection workflow — from policy configur
 
 ## Links
 
-- **GitHub repository:** *[add your repo URL](https://github.com/kitavim2-commits/windows-sysmon-splunk-siem-lab/new/main)]*
+- **GitHub repository:** *[(https://github.com/kitavim2-commits/windows-sysmon-splunk-siem-lab/new/main)]*
 
 ---
 
