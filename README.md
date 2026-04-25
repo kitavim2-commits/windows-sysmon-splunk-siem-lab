@@ -16,22 +16,22 @@
 ### Detection Fire — T1059.001 (PowerShell Encoded Command)
 Live detection of an adversary-style encoded PowerShell command, with full field extraction via the Splunk Add-on for Microsoft Sysmon. Time, user, parent process, image, and command line all captured cleanly — exactly what a SOC analyst would see in production.
 
-![Detection Fire](screenshots/01-detection-fire-clean.png)
+![Detection Fire](https://raw.githubusercontent.com/kitavim2-commits/windows-sysmon-splunk-siem-lab/main/screenshots/01-detection-fire-clean.png)
 
 ### Data Ingestion Pipeline
 Four Windows log sources flowing into the dedicated `winlogs` index: Security, System, Application, and Sysmon Operational.
 
-![Data Sources](screenshots/04-data-sources.png)
+![Data Sources](https://raw.githubusercontent.com/kitavim2-commits/windows-sysmon-splunk-siem-lab/main/screenshots/04-data-sources.png)
 
 ### Sysmon Generating Events at the OS Layer
 Sysmon Operational log in Event Viewer, showing Event ID 1 (process creation) entries being captured at the kernel level before forwarding to Splunk.
 
-![Sysmon Event Viewer](screenshots/03-sysmon-event-viewer.png)
+![Sysmon Event Viewer](https://raw.githubusercontent.com/kitavim2-commits/windows-sysmon-splunk-siem-lab/main/screenshots/03-sysmon-event-viewer.png)
 
 ### Splunk Add-on for Sysmon Installed
 The Splunk Add-on for Microsoft Sysmon enables proper field extraction (Image, CommandLine, ParentImage, etc.) from Sysmon's XML event format.
 
-![Sysmon Add-on](screenshots/02-sysmon-addon-installed.png)
+![Sysmon Add-on](https://raw.githubusercontent.com/kitavim2-commits/windows-sysmon-splunk-siem-lab/main/screenshots/02-sysmon-addon-installed.png)
 
 ---
 
