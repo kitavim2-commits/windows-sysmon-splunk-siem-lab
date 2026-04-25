@@ -2,20 +2,9 @@
 
 ## Project: Windows Endpoint Detection Lab — Sysmon + Splunk SIEM with Adversary Simulation
 
-**Status:** Operational · **Role:** Solo · **Duration:** 2 sessions
+**Status:** Operational · **Role:** Solo · **Duration:** Multi sessions
 
 ---
-
-## Elevator Pitch (30 seconds)
-
-> Built an end-to-end endpoint detection lab: Sysmon for telemetry, Splunk Enterprise as the SIEM, Atomic Red Team for adversary simulation. Enabled native Windows process auditing (Event 4688 with command-line logging), deployed Sysmon with a production-grade config, centralized ~7,000 events into a dedicated Splunk index, and wrote SPL detections mapped to MITRE ATT&CK. Then I validated it the right way — by executing simulated attacks and confirming my SIEM caught them. Including an unplanned incident-response exercise where a Mimikatz atomic test fired accidentally; used SIEM forensic queries to confirm the download was blocked and no compromise occurred. Every stage of the SOC detection workflow, demonstrated on live data.
-
----
-
-## Resume Bullets (Drop-in Ready)
-
-**Single-bullet summary:**
-- Built a Windows endpoint detection lab using Sysmon and Splunk Enterprise; configured native auditing (Event ID 4688 with command-line logging), deployed Sysmon with SwiftOnSecurity config, installed Atomic Red Team for MITRE ATT&CK-mapped simulation, authored SPL detections (T1059, T1566, T1105, T1036), and validated the pipeline by generating adversary telemetry and confirming detection fire for T1059.001 (PowerShell encoded command).
 
 **Multi-bullet detail:**
 - Deployed **Sysmon 15.20** with SwiftOnSecurity's community config to capture enriched process, network, file, and DNS telemetry on a Windows 10/11 endpoint.
@@ -28,7 +17,7 @@
 
 ---
 
-## Skills Demonstrated
+## Skills Learned
 
 ### Technical
 - **SIEM administration:** Splunk Enterprise installation, index/input configuration, `btool` verification, SPL query authoring
