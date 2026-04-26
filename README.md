@@ -7,7 +7,8 @@
 ![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-blue)
 ![Splunk](https://img.shields.io/badge/Splunk-Enterprise-orange)
 ![Sysmon](https://img.shields.io/badge/Sysmon-v15.20-lightgrey)
-![ATT&CK](https://img.shields.io/badge/MITRE%20ATT%26CK-T1059.001-red)
+![ATT&CK 1](https://img.shields.io/badge/MITRE%20ATT%26CK-T1059.001-red)
+![ATT&CK 2](https://img.shields.io/badge/MITRE%20ATT%26CK-T1547.001-red)
 
 ---
 
@@ -33,6 +34,11 @@ The Splunk Add-on for Microsoft Sysmon enables proper field extraction (Image, C
 
 ![Sysmon Add-on](https://raw.githubusercontent.com/kitavim2-commits/windows-sysmon-splunk-siem-lab/main/screenshots/02-sysmon-addon-installed.png)
 
+### Detection Fire — T1547.001 (Registry Run Key Persistence)
+Sysmon Event ID 13 caught a benign persistence simulation: a Registry Run key planted via PowerShell pointing to `notepad.exe`. Detection captured the writer process, full registry path, target executable, and user — everything needed for SOC triage.
+
+![T1547 Detection Fire](https://raw.githubusercontent.com/kitavim2-commits/windows-sysmon-splunk-siem-lab/main/screenshots/05-detection-fire-T1547-persistence.png)
+
 ---
 
 ## 📋 Project Overview
@@ -45,6 +51,7 @@ The lab demonstrates, in a portfolio-ready way, the core SOC analyst workflow: *
 
 - [x] Enable Windows native process-creation auditing (Event ID 4688) with command line logging
 - [x] Deploy Sysmon with a tuned configuration for enriched endpoint telemetry
+- [x] **Detect adversary persistence (T1547.001 — Registry Run Key)** 🆕
 - [x] Install and configure Splunk Enterprise as a local SIEM
 - [x] Ingest Windows Security, System, Application, and Sysmon logs into a dedicated index
 - [x] Install Atomic Red Team for adversary simulation
@@ -279,7 +286,17 @@ index=winlogs EventCode=4625
 | stats count by Account_Name, Workstation_Name, Source_Network_Address
 | sort -count
 ```
+### T1547.001 — Registry Run Key Persistence — VERIFIED ✅
 
+```spl
+index=winlogs sourcetype=xmlwineventlog EventCode=13 
+  (TargetObject="*\\CurrentVersion\\Run\\*" 
+   OR TargetObject="*\\CurrentVersion\\RunOnce\\*")
+| table _time User Image TargetObject Details
+| sort -_time
+```
+
+See full case study: [`docs/case-studies/T1547-001-persistence-registry-runkey.md`](docs/case-studies/T1547-001-persistence-registry-runkey.md)
 ---
 
 ## 🎯 Key Event IDs Reference
