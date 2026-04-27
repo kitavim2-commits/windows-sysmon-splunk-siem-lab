@@ -1,0 +1,213 @@
+# T1071.001 — Application Layer Protocol: DNS
+
+**Detection #3 — DNS Beaconing / Tunneling via Sysmon Event 22**
+
+---
+
+## Summary
+
+This case study documents the detection of DNS-based command-and-control (C2) beaconing behavior using Sysmon Event ID 22 (DNS query) ingested into Splunk. The detection identifies a process issuing a high volume of DNS queries to many unique subdomains under a single parent domain — a fingerprint shared by DNS tunneling tools (dnscat2, Iodine), C2 frameworks with DNS beacon channels (Cobalt Strike, Sliver, Mythic), and several malware families that exfiltrate data through DNS labels.
+
+| Field | Value |
+|---|---|
+| **MITRE ATT&CK** | [T1071.001 — Application Layer Protocol: DNS](https://attack.mitre.org/techniques/T1071/001/) |
+| **Related** | T1572 — Protocol Tunneling |
+| **Data source** | Sysmon Event ID 22 (DNS query) |
+| **Log index** | `winlogs` |
+| **Sourcetype** | `xmlwineventlog` |
+| **Detection type** | Behavioral / volumetric |
+
+---
+
+## Why this matters
+
+DNS is allowed outbound in nearly every network — firewalls that block arbitrary TCP/UDP traffic typically permit DNS to function, making it an attractive covert channel. Adversaries abuse this in three common ways:
+
+1. **C2 channels** — beacons embed instructions in TXT/A record responses; clients embed session data in subdomain labels.
+2. **Data exfiltration** — files are chunked, base32-encoded, and transmitted as subdomain labels in queries to attacker-controlled authoritative DNS servers.
+3. **DGA (domain generation algorithms)** — malware queries dozens of algorithmically generated domains per minute looking for an active C2 host.
+
+All three patterns produce the same detectable fingerprint at the endpoint: a single process emitting many DNS queries with high subdomain entropy under a small number of parent domains. This is detectable without inspecting DNS packet contents — Sysmon Event 22 captures it from the Windows DNS client API directly.
+
+---
+
+## Lab environment
+
+| Component | Version |
+|---|---|
+| OS | Windows 10/11 |
+| Sysmon | 15.20 (schema 4.91) |
+| Sysmon config | SwiftOnSecurity baseline (modified — see below) |
+| SIEM | Splunk Enterprise |
+| Splunk Add-on | Splunk Add-on for Microsoft Sysmon |
+
+---
+
+## Lab gotchas: what I had to fix to make Event 22 work
+
+This detection took longer than expected to build because two configuration issues silently suppressed all DNS query logging despite Sysmon reporting "Configuration updated" successfully on every reload. Documenting these because they're not obvious and they cost real time.
+
+### Issue 1 — Schema version mismatch
+
+The SwiftOnSecurity config I downloaded declared `schemaversion="4.50"` at the top of the XML. My installed Sysmon runtime was schema 4.91. Sysmon happily *loaded* the older-schema config without warning, but DNS query rules underwent significant changes between 4.50 and 4.90 — older-schema rules don't apply correctly under newer runtimes.
+
+**Symptom:** `Get-WinEvent` returned zero Event 22 entries despite Sysmon reporting healthy status, the service running, and the SysmonDrv filter driver loaded.
+
+**Diagnosis:** Comparing the live config schema to the file schema:
+
+```powershell
+.\Sysmon64.exe -c | Select-String -Pattern "schemaversion"
+Select-String -Path "C:\Tools\sysmonconfig-export.xml" -Pattern "schemaversion"
+```
+
+Output revealed:
+```
+Loading configuration file with schema version 4.50
+Sysmon schema version: 4.91
+```
+
+**Fix:** Edit the XML and bump `<Sysmon schemaversion="4.50">` to `<Sysmon schemaversion="4.90">`, then reload.
+
+### Issue 2 — Duplicate `<DnsQuery>` RuleGroups
+
+While trying to filter noisy domains, I appended a second `<RuleGroup>` containing a `<DnsQuery onmatch="exclude">` block at the bottom of the file — not realizing SwiftOnSecurity's config already contained one at lines 922–1141. Sysmon parsed both without erroring, but rule application became unpredictable.
+
+**Fix:** Removed the appended block. SwiftOnSecurity's existing exclude list is comprehensive — adding noise filters to a pre-baked config is almost always a mistake.
+
+### Lessons
+
+- **Always verify the live config matches the file.** `Sysmon64.exe -c` (no filename argument) dumps the currently loaded config. Compare it against your XML directly.
+- **Schema version mismatches fail silently.** Sysmon will not tell you that 30% of your rules were ignored. Always align schema versions explicitly.
+- **One RuleGroup per event type.** Don't append parallel RuleGroups for the same event ID. Edit the existing block in place.
+
+---
+
+## Simulation
+
+I built a standalone PowerShell script to reproduce the beacon pattern: [`scripts/simulation/Invoke-DnsBeaconSimulation.ps1`](../../scripts/simulation/Invoke-DnsBeaconSimulation.ps1)
+
+The script:
+
+- Flushes the local DNS cache (so every query produces network activity and a corresponding Sysmon event)
+- Issues N DNS queries to unique subdomains under a configurable parent domain
+- Optionally adds randomized jitter between queries to mimic real C2 evasion behavior
+- Logs each query with timestamp for correlation against Sysmon/Splunk telemetry
+
+Default invocation:
+
+```powershell
+.\Invoke-DnsBeaconSimulation.ps1
+# 20 queries to evil-lab-domain.xyz, ~3s intervals, ~60s total runtime
+```
+
+Realistic-jitter run:
+
+```powershell
+.\Invoke-DnsBeaconSimulation.ps1 -Count 30 -IntervalSeconds 10 -Jitter
+```
+
+**Safety:** The script issues only DNS queries to a non-routable lab domain. No payloads, no real C2 infrastructure contacted, no malicious code executes. The activity is purely network telemetry generation.
+
+---
+
+## Detection logic
+
+### Splunk SPL
+
+```spl
+index=winlogs sourcetype=xmlwineventlog EventCode=22 earliest=-15m
+| rex field=QueryName "(?<parent_domain>[^.]+\.[^.]+)$"
+| stats count, dc(QueryName) as unique_subdomains, min(_time) as first_seen, max(_time) as last_seen by parent_domain, Image
+| eval duration_sec = last_seen - first_seen
+| eval queries_per_min = round((count / duration_sec) * 60, 2)
+| where count >= 10 AND unique_subdomains >= 5
+| sort -count
+| convert ctime(first_seen) ctime(last_seen)
+```
+
+### How it works
+
+| Step | Purpose |
+|---|---|
+| `EventCode=22` | Filter to DNS query events only |
+| `rex ... parent_domain` | Extract the registered parent (last two labels) from the FQDN |
+| `stats count, dc(QueryName)` | Per parent domain + originating process: total query count and *distinct* subdomain count |
+| `where count >= 10 AND unique_subdomains >= 5` | Threshold filter — surfaces only domains queried both heavily *and* with high subdomain diversity |
+| `queries_per_min` | Rate metric for triage prioritization |
+
+### The key insight: count vs. unique_subdomains ratio
+
+Legitimate DNS traffic has a **low ratio** of unique subdomains to total queries — browsing `github.com` produces dozens of queries to the same handful of FQDNs (`github.com`, `api.github.com`, `avatars.githubusercontent.com`). A ratio approaching **1:1** — every query to a unique name — is the signal. That's exactly what DNS tunneling, DGA, and beacon session-encoding produce.
+
+---
+
+## Results
+
+Running the simulation script generated 20 DNS queries to unique subdomains under `evil-lab-domain.xyz` over approximately 59 seconds. The detection SPL surfaced this cleanly:
+
+| parent_domain | Image | count | unique_subdomains | duration_sec |
+|---|---|---|---|---|
+| `evil-lab-domain.xyz` | `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe` | 20 | 20 | 58.7 |
+
+`unique_subdomains == count` (1:1 ratio) is the detection fingerprint. Combined with the originating process (`powershell.exe` issuing sustained DNS queries to a `.xyz` domain — itself unusual outside specific automation contexts), this is a high-confidence signal.
+
+Normal background DNS traffic during the same window — `google.com`, `github.com`, `*.office.com`, `*.microsoft.com` — was correctly excluded by the `unique_subdomains >= 5` threshold, because legitimate browsing reuses domain names heavily.
+
+*(See `screenshots/dns-beacon-detection-stats.png` and `screenshots/dns-beacon-timeline.png`.)*
+
+---
+
+## Tuning for production
+
+The thresholds here (`count >= 10`, `unique_subdomains >= 5`, `15m` window) are **lab-tuned for fast iteration**. Production deployment requires tuning against organizational baseline traffic, because several legitimate technologies produce superficially similar patterns:
+
+| Source | Why it looks like a beacon |
+|---|---|
+| CDNs (Akamai, CloudFront, Fastly) | Many unique subdomains under one parent |
+| Email security gateways | Bulk reputation lookups for hashes/URLs encoded in subdomains |
+| EDR / security telemetry | Some agents use DNS for lookup of file/IP reputation |
+| Antivirus updates | High-frequency manifest checks |
+| DNS-based VPNs / split-horizon resolvers | Tunneling is the legitimate function |
+
+**Recommended production adjustments:**
+
+- Raise thresholds (start at `count >= 50` and `unique_subdomains >= 25` per 15m window)
+- Maintain an allowlist of known-good parent domains for CDNs, AV vendors, EDR tools, and SaaS platforms in use
+- Add an enrichment step against a domain-reputation feed (newly-registered domains weight higher)
+- Correlate with originating process — `chrome.exe` querying many CDN subdomains is normal; `powershell.exe` doing it is not
+- Suppress detections where the originating process is on an explicit allowlist (e.g., browser binaries, AV update services)
+
+---
+
+## Limitations
+
+1. **Low-and-slow beacons evade volumetric detection.** Real C2 beacons often check in every 30–60 minutes. A single query per hour will not cross any reasonable threshold. Catching slow beacons requires interval-regularity analysis (looking for unusually consistent inter-query timing) rather than volume.
+2. **Encrypted DNS bypasses Sysmon Event 22 entirely.** DNS-over-HTTPS (DoH) and DNS-over-TLS (DoT) traffic does not generate DNS query events because the OS DNS client isn't involved — the application resolves directly over HTTPS. Detection of DoH-based C2 requires network-layer inspection (TLS SNI, JA3 fingerprinting, or DoH endpoint blocklists).
+3. **No DNS response inspection.** Sysmon Event 22 captures the query and a basic result field but does not log full TXT record contents — so payload-bearing DNS responses (the inbound C2 channel for beacons) are not visible at this layer.
+4. **High false-positive potential without tuning.** As noted above, this rule will fire on legitimate CDN traffic in production environments without a maintained allowlist.
+
+---
+
+## References
+
+- MITRE ATT&CK — [T1071.001 Application Layer Protocol: DNS](https://attack.mitre.org/techniques/T1071/001/)
+- Microsoft Sysinternals — [Sysmon documentation](https://docs.microsoft.com/en-us/sysinternals/downloads/sysmon)
+- SwiftOnSecurity — [sysmon-config](https://github.com/SwiftOnSecurity/sysmon-config) (baseline configuration)
+- SANS ISC — DNS tunneling detection writeups
+- Splunk — [Detecting DNS exfiltration](https://www.splunk.com/en_us/blog/security/random-words-on-entropy-and-dns.html)
+
+---
+
+## Files in this case study
+
+| File | Purpose |
+|---|---|
+| `docs/case-studies/T1071.001-dns-beaconing.md` | This document |
+| `scripts/simulation/Invoke-DnsBeaconSimulation.ps1` | Beacon traffic generator |
+| `screenshots/dns-beacon-detection-stats.png` | Splunk Statistics view of detection result |
+| `screenshots/dns-beacon-timeline.png` | Timechart visualization of beacon interval pattern |
+| `screenshots/dns-beacon-simulation-running.png` | PowerShell terminal during simulation |
+
+---
+
+*Detection #3 of an ongoing endpoint detection lab. See [repo root](../../) for full project context.*
