@@ -9,7 +9,7 @@
 ![Sysmon](https://img.shields.io/badge/Sysmon-v15.20-lightgrey)
 ![ATT&CK 1](https://img.shields.io/badge/MITRE%20ATT%26CK-T1059.001-red)
 ![ATT&CK 2](https://img.shields.io/badge/MITRE%20ATT%26CK-T1547.001-red)
-
+![ATT&CK 3](https://img.shields.io/badge/MITRE%20ATT%26CK-T1071.001-red)
 ---
 
 ## 📸 Visual Evidence
@@ -39,6 +39,11 @@ Sysmon Event ID 13 caught a benign persistence simulation: a Registry Run key pl
 
 ![T1547 Detection Fire](https://raw.githubusercontent.com/kitavim2-commits/windows-sysmon-splunk-siem-lab/main/screenshots/05-detection-fire-T1547-persistence.png)
 
+### Detection Fire — T1071.001 (DNS Beaconing / C2)
+Statistical detection of beacon-style DNS traffic: 20 queries with unique subdomains under a single suspicious `.xyz` parent domain over ~60 seconds. PowerShell as the originating process. The 1:1 count-to-unique-subdomains ratio is the smoking gun.
+
+![T1071 Detection Fire](https://raw.githubusercontent.com/kitavim2-commits/windows-sysmon-splunk-siem-lab/main/screenshots/06-detection-fire-T1071-dns-beaconing.png)
+
 ---
 
 ## 📋 Project Overview
@@ -57,6 +62,7 @@ The lab demonstrates, in a portfolio-ready way, the core SOC analyst workflow: *
 - [x] Install Atomic Red Team for adversary simulation
 - [x] **Generate adversary telemetry and successfully detect it in Splunk** 🎯
 - [x] Document the workflow for reproducibility and portfolio use
+- [x] **Detect adversary C2 beaconing (T1071.001 — DNS)** 🆕
 
 ---
 
@@ -297,8 +303,24 @@ index=winlogs sourcetype=xmlwineventlog EventCode=13
 ```
 
 See full case study: [`docs/case-studies/T1547-001-persistence-registry-runkey.md`](docs/case-studies/T1547-001-persistence-registry-runkey.md)
----
 
+---
+### T1071.001 — DNS Beaconing — VERIFIED ✅
+
+Statistical detection looking for high count-to-unique-subdomains ratios on a single parent domain from a single process — the classic DNS tunneling/beacon fingerprint.
+
+```spl
+index=winlogs sourcetype=xmlwineventlog EventCode=22 earliest=-10m
+| rex field=QueryName "(?<parent_domain>[^.]+\.[^.]+)$"
+| stats count, dc(QueryName) as unique_subdomains, min(_time) as first_seen, max(_time) as last_seen by parent_domain, Image
+| eval duration_sec = last_seen - first_seen
+| where count >= 10 AND unique_subdomains >= 5
+| sort -count
+```
+
+See full case study: [`docs/case-studies/T1071-001-dns-beaconing.md`](docs/case-studies/T1071-001-dns-beaconing.md)
+
+---
 ## 🎯 Key Event IDs Reference
 
 | Event ID | Source | Meaning |
