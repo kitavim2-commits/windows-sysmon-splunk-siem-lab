@@ -42,7 +42,7 @@ Sysmon Event ID 13 caught a benign persistence simulation: a Registry Run key pl
 ### Detection Fire — T1071.001 (DNS Beaconing / C2)
 Statistical detection of beacon-style DNS traffic: 20 queries with unique subdomains under a single suspicious `.xyz` parent domain over ~60 seconds. PowerShell as the originating process. The 1:1 count-to-unique-subdomains ratio is the smoking gun.
 
-![T1071 Detection Fire](https://raw.githubusercontent.com/kitavim2-commits/windows-sysmon-splunk-siem-lab/main/screenshots/07-%20T1071-beaconing.png)
+![T1071 Detection Fire](https://raw.githubusercontent.com/kitavim2-commits/windows-sysmon-splunk-siem-lab/main/screenshots/07-detection-fire-T1071-beaconing)
 
 ---
 
