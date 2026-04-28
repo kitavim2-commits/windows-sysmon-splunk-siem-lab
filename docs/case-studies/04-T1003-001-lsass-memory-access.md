@@ -227,7 +227,7 @@ id: t1003-001-lsass-memory-access
 status: experimental
 description: Detects non-system processes opening LSASS with memory-read access masks
   associated with credential dumping tools (Mimikatz, ProcDump, etc.)
-author: kitavim2-commits
+author: Mitchel Kitavi
 date: 2026-04-26
 tags:
   - attack.credential_access
