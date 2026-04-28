@@ -1,77 +1,78 @@
-# Detection Case Study #4: T1003.001 — LSASS Memory Access
+# T1003.001 — OS Credential Dumping: LSASS Memory
 
-**Lab:** Windows Endpoint Detection Lab  
-**Author:** Mitchel Kitavi  
-**Date:** 2026-04-26  
-**Detection #:** 4 of 4  
+**Detection #4 — LSASS Process Access via Sysmon Event 10**
 
 ---
 
-## 1. Overview
+## Summary
 
-| Field | Detail |
+This case study documents the detection of credential dumping attempts targeting LSASS (Local Security Authority Subsystem Service) using Sysmon Event ID 10 (process access) ingested into Splunk. The detection identifies non-system processes opening handles to `lsass.exe` with access masks associated with memory-read operations — the specific permissions required by credential dumping tools including Mimikatz (`sekurlsa::logonpasswords`), ProcDump (`procdump -ma lsass.exe`), Cobalt Strike, and Sliver.
+
+| Field | Value |
 |---|---|
-| **Technique** | T1003.001 — OS Credential Dumping: LSASS Memory |
-| **Tactic** | Credential Access (TA0006) |
-| **Data Source** | Sysmon Event ID 10 (ProcessAccess) |
-| **MITRE ATT&CK** | [T1003.001](https://attack.mitre.org/techniques/T1003/001/) |
-| **Severity** | Critical |
-| **Platform** | Windows 10/11 |
+| **MITRE ATT&CK** | [T1003.001 — OS Credential Dumping: LSASS Memory](https://attack.mitre.org/techniques/T1003/001/) |
+| **Related** | T1003.002 — SAM, T1055 — Process Injection |
+| **Data source** | Sysmon Event ID 10 (process access) |
+| **Log index** | `winlogs` |
+| **Sourcetype** | `xmlwineventlog` |
+| **Detection type** | Behavioral / access mask signature |
 
 ---
 
-## 2. Technique Background
+## Why this matters
 
-**LSASS** (Local Security Authority Subsystem Service, `lsass.exe`) is a Windows core process responsible for enforcing security policy and managing authentication. It stores sensitive credential material in memory, including:
+LSASS is the Windows process responsible for authentication policy enforcement. It holds in memory:
 
-- NTLM password hashes
-- Kerberos tickets (TGT and service tickets)
-- Plaintext passwords (in older configurations)
-- LM hashes
+- NTLM password hashes for all interactively logged-on users
+- Kerberos tickets (TGTs and service tickets)
+- Plaintext credentials in some configurations (WDigest)
+- LM hashes (legacy systems)
 
-Attackers with SYSTEM or Administrator privileges can open a handle to the LSASS process with `PROCESS_VM_READ` permissions and extract this material directly from memory. This is the primary method used by **Mimikatz** (`sekurlsa::logonpasswords`), **ProcDump** (`procdump -ma lsass.exe`), **Cobalt Strike** (built-in hashdump), and virtually every major ransomware operator during the lateral movement phase of an intrusion.
+Any process with SYSTEM or Administrator privileges can call `OpenProcess()` against LSASS with `PROCESS_VM_READ` permissions and extract this material directly. This is the primary lateral movement enabler in the majority of ransomware intrusions — operators dump LSASS within minutes of gaining admin access to harvest hashes for pass-the-hash or offline cracking across the domain.
 
-### Real-World Prevalence
-
-LSASS credential dumping is observed in the vast majority of sophisticated intrusions:
-
-- **Ransomware operators** (LockBit, BlackCat, Conti) dump LSASS in the first minutes after gaining admin access to move laterally across the domain
-- **Nation-state actors** use custom tools that mimic the same access patterns
-- **Red teams** treat this as a standard phase-2 objective immediately after privilege escalation
-
-### Why `GrantedAccess` is the Key Signal
-
-When a process opens a handle to LSASS, Windows records the *access mask* — a bitmask defining what operations are permitted. Sysmon captures this in the `GrantedAccess` field of Event 10. Specific access masks are strongly associated with credential-dumping tools:
-
-| Access Mask | Meaning | Associated Tool |
-|---|---|---|
-| `0x1410` | VM_READ + QUERY_INFORMATION + QUERY_LIMITED | Mimikatz `sekurlsa` |
-| `0x1010` | VM_READ + QUERY_LIMITED | Mimikatz `sekurlsa` variant |
-| `0x1438` | VM_READ + QUERY_INFORMATION + DUP_HANDLE | Mimikatz / ProcDump |
-| `0x143a` | Extended variant | Mimikatz variants |
-| `0x1fffff` | PROCESS_ALL_ACCESS | Broad tools, some AV |
-| `0x0040` | VM_READ only | Minimal dumpers |
-| `0x1000` | QUERY_LIMITED only | Benign (Windows internals) |
+The critical forensic detail is that Sysmon Event 10 fires at the `OpenProcess()` syscall — **before any memory read occurs**. This means the detection triggers at the earliest possible moment in the attack chain, before any credentials are actually extracted.
 
 ---
 
-## 3. Detection Environment
+## Lab environment
 
-| Component | Version / Detail |
+| Component | Version |
 |---|---|
-| OS | Windows 10/11 (home lab) |
-| Sysmon | v15.20 |
-| Sysmon Config | SwiftOnSecurity + custom ProcessAccess rule |
+| OS | Windows 10/11 |
+| Sysmon | 15.20 (schema 4.91) |
+| Sysmon config | SwiftOnSecurity baseline (modified — see below) |
 | SIEM | Splunk Enterprise |
-| Sourcetype | `xmlwineventlog` |
-| Index | `winlogs` |
-| AV | Malwarebytes (primary) + Windows Defender (SxS passive) |
+| Splunk Add-on | Splunk Add-on for Microsoft Sysmon |
 
-### Sysmon Configuration Note
+---
 
-SwiftOnSecurity's default config includes a `ProcessAccess` rule group set to `onmatch="include"` with **no rules inside it**. Per Sysmon's logic, an include group with no entries logs nothing. Event 10 must be enabled by adding an explicit target rule.
+## Lab gotcha: Event 10 is disabled by default in SwiftOnSecurity's config
 
-**Custom rule added to `sysmonconfig-export.xml`:**
+This detection required a config change before any telemetry appeared. SwiftOnSecurity's config includes a `ProcessAccess` RuleGroup but it is intentionally empty:
+
+```xml
+<ProcessAccess onmatch="include">
+    <!--NOTE: Using "include" with no rules means nothing in this section will be logged-->
+</ProcessAccess>
+```
+
+In Sysmon, an `onmatch="include"` group with no rules inside it logs **nothing** — the comment says exactly this. Event 10 is disabled by design in the baseline config because process access monitoring on a busy system is extremely noisy: every AV scan, backup agent, and debugger opens handles constantly.
+
+**Symptom:** Zero results from `index=winlogs sourcetype=xmlwineventlog EventCode=10` even after running the simulation, confirmed by checking the config:
+
+```powershell
+Select-String -Path "C:\Tools\sysmonconfig-export.xml" -Pattern "ProcessAccess" -Context 0,3
+```
+
+Which returned:
+
+```
+<ProcessAccess onmatch="include">
+    <!--NOTE: Using "include" with no rules means nothing in this section will be logged-->
+</ProcessAccess>
+```
+
+**Fix:** Replace the empty block with a targeted include rule for lsass.exe:
 
 ```xml
 <ProcessAccess onmatch="include">
@@ -80,71 +81,43 @@ SwiftOnSecurity's default config includes a `ProcessAccess` rule group set to `o
 </ProcessAccess>
 ```
 
-This rule logs Event 10 **only when the target process is lsass.exe** — keeping noise low while capturing exactly the signal needed.
+Reload with:
 
-Config reload command:
 ```powershell
 cd C:\Tools
 .\Sysmon64.exe -c sysmonconfig-export.xml
 ```
 
+**Why this rule design is correct:** Targeting only `lsass.exe` as the `TargetImage` keeps the event volume low while capturing the exact signal needed — any process opening a handle to lsass. The noise problem that motivated disabling Event 10 entirely doesn't apply when the filter is this specific.
+
+### Lessons
+
+- **Read the comments in the config.** SwiftOnSecurity documented this behavior explicitly — the empty include group is intentional, not an oversight.
+- **"Configuration updated" does not mean events are flowing.** Sysmon validates and loads the config without verifying whether any rules would actually fire. Always verify with a test query after every config change.
+- **Targeted include rules beat broad exclude rules for high-noise event types.** For Event 10, one specific TargetImage is more useful than trying to exclude everything else.
+
 ---
 
-## 4. Simulation
+## Simulation
 
-### Method
-
-Real credential-dumping tools (Mimikatz, ProcDump) were **not used** — this is a home lab environment with active AV and no isolated network segment. Instead, the simulation used PowerShell's `Get-Process -Module` flag, which opens a handle to the target process with `PROCESS_VM_READ` permissions to enumerate loaded DLL modules. This produces the **identical Sysmon Event 10 signal** without reading or extracting any credential material.
-
-### Simulation Command
+Real credential-dumping tools (Mimikatz, ProcDump) were not used — this is a home lab with active AV and no isolated network segment. Instead, PowerShell's `Get-Process -Module` flag was used as a safe simulation.
 
 ```powershell
 # Run from an elevated PowerShell prompt
+# Opens a PROCESS_VM_READ handle to lsass to enumerate loaded modules
+# Does NOT read or extract any credential material
 Get-Process -Name lsass -Module -ErrorAction SilentlyContinue | Out-Null
 ```
 
-**Why this works as a simulation:**
+**Why this is a valid simulation:** `Get-Process -Module` calls `OpenProcess()` with `PROCESS_VM_READ | PROCESS_QUERY_INFORMATION` — the same access rights Mimikatz requests. Sysmon Event 10 fires on the `OpenProcess()` call before any memory read occurs, so the telemetry generated is identical to a real credential dumping attempt. The `GrantedAccess` value captured (`0x1410`) matches Mimikatz's primary `sekurlsa` access mask exactly.
 
-- `Get-Process -Module` requires `PROCESS_VM_READ | PROCESS_QUERY_INFORMATION` — the same access rights Mimikatz uses
-- The `GrantedAccess` value captured (`0x1410`) matches the Mimikatz `sekurlsa` access mask exactly
-- No credential material is accessed — only the list of loaded DLLs is read
-- Sysmon cannot distinguish this handle open from a real attack tool's handle open at the Event 10 level
-
-### Why This is Realistic
-
-From a detection standpoint, this simulation is high-fidelity. Sysmon Event 10 fires on the `OpenProcess()` syscall — at the moment the handle is granted, before any memory read occurs. A real attacker's tool and this simulation look identical at the telemetry layer.
+**Safety:** No credential material is read. `Get-Process -Module` only enumerates the list of DLLs loaded in the target process — it does not read LSASS memory buffers.
 
 ---
 
-## 5. Evidence Captured
+## Detection logic
 
-### Sysmon Event 10 — Raw Fields
-
-| Field | Value |
-|---|---|
-| EventCode | 10 |
-| SourceImage | `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe` |
-| TargetImage | `C:\Windows\system32\lsass.exe` |
-| GrantedAccess | `0x1410` |
-| access_label | Mimikatz sekurlsa signature |
-| CallTrace | `C:\Windows\SYSTEM32\ntdll.dll+9db14\|C:\Windows\System32\KERNELBASE...` |
-
-**Two events captured** — corresponding to two simulation runs. Both show identical access mask `0x1410`.
-
-### False Positives Observed
-
-During baseline collection, two other processes were observed accessing lsass:
-
-| Process | GrantedAccess | Assessment |
-|---|---|---|
-| `C:\Program Files\Splunk\bin\splunkd.exe` | `0x1fffff` | Splunk process monitoring — known FP, allowlisted |
-| `C:\Windows\system32\svchost.exe` | `0x1000` | Windows internal query — benign, allowlisted |
-
----
-
-## 6. Detection Logic
-
-### Splunk SPL — Detection Query
+### Splunk SPL
 
 ```spl
 index=winlogs sourcetype=xmlwineventlog EventCode=10
@@ -165,123 +138,108 @@ index=winlogs sourcetype=xmlwineventlog EventCode=10
 | sort -_time
 ```
 
-### Query Logic Breakdown
+### How it works
 
-1. **Filter to lsass target** — `TargetImage` contains `lsass.exe`; eliminates all non-relevant Event 10s
-2. **Allowlist known-good sources** — excludes Splunk, Windows internals, AV processes by regex
-3. **Normalize access mask** — lowercases `GrantedAccess` for consistent matching
-4. **Label by attack pattern** — maps known malicious masks to tool associations
-5. **Drop unknowns** — removes unlabeled access masks, reducing false positive noise
-6. **Surface CallTrace** — preserves forensic stack trace for post-alert investigation
+| Step | Purpose |
+|---|---|
+| `EventCode=10` | Filter to process access events only |
+| `where like(TargetImage, "%lsass.exe")` | Narrow to events targeting LSASS specifically |
+| `where NOT match(SourceImage, ...)` | Allowlist known-good processes that legitimately open LSASS handles |
+| `eval access_hex` | Normalize GrantedAccess to lowercase hex for consistent matching |
+| `eval access_label` | Map known malicious access masks to tool associations |
+| `where access_label != "Unknown..."` | Drop events with unlabeled masks — reduces noise from benign processes not caught by the allowlist |
+| `CallTrace` | Preserved in output — forensic stack trace showing exactly how the handle was opened |
 
-### Verified Result
+### The key field: GrantedAccess
 
-The query returned exactly 2 events — both `powershell.exe → lsass.exe` with `GrantedAccess: 0x1410`, labeled `Mimikatz sekurlsa signature`. Zero false positives after allowlisting.
+When a process calls `OpenProcess()`, Windows records the access mask — a bitmask defining what operations are permitted on the handle. Sysmon captures this in `GrantedAccess`. Specific masks fingerprint the tool regardless of binary name or path, making name-based evasion ineffective:
 
----
-
-## 7. MITRE ATT&CK Mapping
-
-```
-Tactic:     Credential Access (TA0006)
-Technique:  OS Credential Dumping (T1003)
-Sub-tech:   LSASS Memory (T1003.001)
-
-Related techniques this detection may also catch:
-  T1003.002 — Security Account Manager (SAM dump via lsass handle)
-  T1055     — Process Injection (injected code accessing lsass)
-```
-
-### Detection Coverage
-
-| Stage | Covered? | Notes |
+| Mask | Meaning | Associated tool |
 |---|---|---|
-| Handle open (OpenProcess) | ✅ Yes | Event 10 fires at syscall |
-| Memory read (ReadProcessMemory) | ❌ No | Requires additional tooling / ETW |
-| Dump file write | ❌ No | Needs Event 11 (FileCreate) rule |
-| Offline parsing | ❌ No | Out of scope for endpoint |
+| `0x1410` | VM_READ + QUERY_INFORMATION + QUERY_LIMITED | Mimikatz `sekurlsa` (primary) |
+| `0x1010` | VM_READ + QUERY_LIMITED | Mimikatz `sekurlsa` (variant) |
+| `0x1438` | VM_READ + QUERY_INFORMATION + DUP_HANDLE | Mimikatz / ProcDump |
+| `0x143a` | Extended variant | Mimikatz variants |
+| `0x1fffff` | PROCESS_ALL_ACCESS | Broad tools, some AV/monitoring |
+| `0x0040` | VM_READ only | Minimal custom dumpers |
+| `0x1000` | QUERY_LIMITED only | Benign — Windows internals |
 
-This detection catches the **handle acquisition** phase — the earliest detectable moment in the credential dumping sequence.
+### CallTrace: the forensic bonus
 
----
-
-## 8. Analyst Response Playbook
-
-When this alert fires in production:
-
-1. **Identify SourceImage** — Is it a known tool? Does the path look legitimate?
-2. **Check GrantedAccess** — `0x1410` / `0x1010` / `0x1438` are high-confidence malicious
-3. **Review CallTrace** — Unexpected DLLs in the stack (e.g., unsigned, from temp dirs) indicate injection
-4. **Check parent process** — What spawned the accessing process? (`Event 1`, `ParentImage`)
-5. **Look for dump file** — Search Event 11 for `.dmp` files created within ±60 seconds
-6. **Check for lateral movement** — If hashes were dumped, look for pass-the-hash (Event 4624 logon type 3 from unusual sources)
-7. **Isolate if confirmed** — Remove endpoint from network before attempting remediation
+`CallTrace` records the full call stack at the moment `OpenProcess()` was invoked — which DLLs were involved, in what order. This field distinguishes a legitimate process that was injected with shellcode (the trace will show an unexpected or unsigned DLL mid-stack) from a legitimate process doing a legitimate thing (clean system DLL chain). For LSASS access specifically, `ntdll.dll → KERNELBASE.dll → [tool DLL]` is normal; anything else in the stack warrants deeper investigation.
 
 ---
 
-## 9. Sigma Rule
+## Results
 
-```yaml
-title: LSASS Memory Access via Suspicious Process
-id: t1003-001-lsass-memory-access
-status: experimental
-description: Detects non-system processes opening LSASS with memory-read access masks
-  associated with credential dumping tools (Mimikatz, ProcDump, etc.)
-author: Mitchel Kitavi
-date: 2026-04-26
-tags:
-  - attack.credential_access
-  - attack.t1003.001
-logsource:
-  product: windows
-  category: process_access
-detection:
-  selection:
-    TargetImage|endswith: '\lsass.exe'
-    GrantedAccess|contains:
-      - '0x1010'
-      - '0x1410'
-      - '0x1438'
-      - '0x143a'
-      - '0x1fffff'
-  filter_legit:
-    SourceImage|contains:
-      - '\MsMpEng.exe'
-      - '\mbam.exe'
-      - '\splunkd.exe'
-      - '\csrss.exe'
-      - '\werfault.exe'
-      - '\svchost.exe'
-      - '\lsass.exe'
-  condition: selection and not filter_legit
-falsepositives:
-  - AV/EDR products opening LSASS for process inspection
-  - SIEM agents (Splunk, Elastic) querying process information
-  - Legitimate admin tools (Process Explorer, Task Manager)
-level: high
-```
+Running the simulation (`Get-Process -Name lsass -Module`) generated two Event 10 entries — one per simulation run. The detection SPL returned exactly those two events with zero false positives after allowlisting:
+
+| _time | SourceImage | TargetImage | GrantedAccess | access_label |
+|---|---|---|---|---|
+| 2026-04-26 19:14:29 | `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe` | `C:\Windows\system32\lsass.exe` | `0x1410` | Mimikatz sekurlsa signature |
+| 2026-04-26 19:11:53 | `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe` | `C:\Windows\system32\lsass.exe` | `0x1410` | Mimikatz sekurlsa signature |
+
+`powershell.exe` opening a handle to `lsass.exe` with access mask `0x1410` — the Mimikatz sekurlsa signature — is a high-confidence signal. A real attacker using Mimikatz, a renamed Mimikatz binary, or any tool that calls `sekurlsa::logonpasswords` would produce an identical event.
+
+**False positives identified during baseline collection:**
+
+| Process | GrantedAccess | Assessment |
+|---|---|---|
+| `C:\Program Files\Splunk\bin\splunkd.exe` | `0x1fffff` | Splunk process monitoring — added to allowlist |
+| `C:\Windows\system32\svchost.exe` | `0x1000` | Windows internal query — benign, added to allowlist |
+
+*(See `screenshots/08-T1003-lsass-event10.png`.)*
 
 ---
 
-## 10. Key Takeaways
+## Tuning for production
 
-- **Event 10 is disabled by default** in SwiftOnSecurity's config — enabling it for lsass alone adds high-value signal with minimal noise
-- **`GrantedAccess` is the detection pivot** — the bitmask fingerprints the tool regardless of binary name or path
-- **`0x1410` is Mimikatz's primary sekurlsa mask** — seeing this from any non-AV process is a critical alert
-- **CallTrace adds forensic depth** — reveals whether the handle was opened by legitimate code or injected shellcode
-- **Layered detection is needed** — Event 10 catches the handle open; Event 11 catches the dump file write; both together maximize coverage
+The allowlist in the detection query is a starting point, not a complete list. Every environment will have additional legitimate processes that open LSASS handles:
+
+| Source | Why it accesses LSASS |
+|---|---|
+| AV / EDR agents (MsMpEng, mbam, CrowdStrike, SentinelOne) | Process memory scanning for malware detection |
+| SIEM / monitoring agents (Splunk, Elastic, NXLog) | Process enumeration for telemetry |
+| Password managers | Some products verify credential store integrity |
+| Remote access tools (RDP, VDI agents) | Session credential handling |
+| Vulnerability scanners | Host assessment |
+
+**Recommended production approach:**
+
+- Audit Event 10 events targeting lsass over a 7-day baseline window to identify all legitimate `SourceImage` values in your environment
+- Maintain the allowlist as a Splunk lookup table rather than hardcoded regex — easier to update without modifying the query
+- Alert on `0x1fffff` (PROCESS_ALL_ACCESS) from any process not on the allowlist — this is never a routine access level for lsass
+- Correlate with Event 11 (file created) looking for `.dmp` files within ±60 seconds — if a handle open is followed by a dump file write, confidence goes to critical
+- Correlate downstream with Windows Security Event 4624 logon type 3 from unusual sources to detect pass-the-hash following a successful dump
 
 ---
 
-## 11. Lab Series Navigation
+## Limitations
 
-| # | Technique | Event | Status |
-|---|---|---|---|
-| 1 | T1059.001 — PowerShell Encoded Command | Sysmon Event 1 | ✅ Complete |
-| 2 | T1547.001 — Registry Run Key Persistence | Sysmon Event 13 | ✅ Complete |
-| 3 | T1071.001 — DNS Beaconing / C2 | Sysmon Event 22 | ✅ Complete |
-| 4 | T1003.001 — LSASS Memory Access | Sysmon Event 10 | ✅ Complete |
+1. **This detection catches the handle open, not the memory read.** If an attacker uses a driver or kernel exploit to read LSASS memory without calling `OpenProcess()` at user-mode, Event 10 will not fire. Kernel-level dumping techniques (e.g., direct syscalls bypassing `ntdll.dll` hooks) may also evade this.
+2. **Protected Process Light (PPL) partially mitigates this at the OS level.** Windows 8.1+ allows LSASS to run as a Protected Process Light, which prevents standard `OpenProcess()` calls from succeeding even with admin rights. PPL bypass techniques exist but they are significantly more complex and leave different artifacts.
+3. **Dump file write is not covered here.** A full detection chain should also monitor Event 11 for `.dmp` file creation, which catches tools that dump to disk for offline parsing (ProcDump, comsvcs.dll via rundll32).
+4. **The allowlist requires maintenance.** New software installs, agent upgrades, and configuration changes can introduce new legitimate LSASS-accessing processes that generate false positives until added to the allowlist.
 
 ---
 
-*Part of the [Windows Sysmon + Splunk SIEM Lab](https://github.com/kitavim2-commits/windows-sysmon-splunk-siem-lab)*
+## References
+
+- MITRE ATT&CK — [T1003.001 OS Credential Dumping: LSASS Memory](https://attack.mitre.org/techniques/T1003/001/)
+- Microsoft Sysinternals — [Sysmon documentation](https://docs.microsoft.com/en-us/sysinternals/downloads/sysmon)
+- SwiftOnSecurity — [sysmon-config](https://github.com/SwiftOnSecurity/sysmon-config) (baseline configuration)
+- Gentilkiwi — [Mimikatz](https://github.com/gentilkiwi/mimikatz) (reference for access mask values)
+- SANS — [Detecting Credential Dumping](https://www.sans.org/white-papers/credential-dumping-windows/)
+
+---
+
+## Files in this case study
+
+| File | Purpose |
+|---|---|
+| `docs/case-studies/T1003.001-LSASS-Memory-Access.md` | This document |
+| `screenshots/08-T1003-lsass-event10.png` | Splunk result showing powershell.exe → lsass.exe, GrantedAccess 0x1410 |
+
+---
+
+*Detection #4 of an ongoing endpoint detection lab. See [repo root](../../) for full project context.*
