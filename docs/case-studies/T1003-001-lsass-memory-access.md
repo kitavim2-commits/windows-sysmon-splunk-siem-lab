@@ -241,5 +241,3 @@ The allowlist in the detection query is a starting point, not a complete list. E
 | `screenshots/08-T1003-lsass-event10.png` | Splunk result showing powershell.exe → lsass.exe, GrantedAccess 0x1410 |
 
 ---
-
-*Detection #4 of an ongoing endpoint detection lab. See [(https://github.com/kitavim2-commits/windows-sysmon-splunk-siem-lab)](../../..] for full project context.*
