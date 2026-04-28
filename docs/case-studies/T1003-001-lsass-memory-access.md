@@ -242,4 +242,4 @@ The allowlist in the detection query is a starting point, not a complete list. E
 
 ---
 
-*Detection #4 of an ongoing endpoint detection lab. See [repo root]((https://github.com/kitavim2-commits/windows-sysmon-splunk-siem-lab)] for full project context.*
+*Detection #4 of an ongoing endpoint detection lab. See [(https://github.com/kitavim2-commits/windows-sysmon-splunk-siem-lab)](../../..] for full project context.*
