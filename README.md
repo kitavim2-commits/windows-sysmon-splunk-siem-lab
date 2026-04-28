@@ -11,6 +11,7 @@
 ![ATT&CK 2](https://img.shields.io/badge/MITRE%20ATT%26CK-T1547.001-red)
 ![ATT&CK 3](https://img.shields.io/badge/MITRE%20ATT%26CK-T1071.001-red)
 [![ATT&CK 4](https://img.shields.io/badge/MITRE%20ATT%26CK-T1003.001-red)](https://attack.mitre.org/techniques/T1003/001/)
+[![ATT&CK 5](https://img.shields.io/badge/MITRE%20ATT%26CK-T1218-red)](https://attack.mitre.org/techniques/T1218/)
 
 ---
 
@@ -52,6 +53,14 @@ Sysmon Event ID 10 caught PowerShell opening a handle to `lsass.exe` with `Grant
 
 [![T1003 Detection Fire](https://raw.githubusercontent.com/kitavim2-commits/windows-sysmon-splunk-siem-lab/main/screenshots/08-T1003-lsass-event10.png)](https://raw.githubusercontent.com/kitavim2-commits/windows-sysmon-splunk-siem-lab/main/screenshots/08-T1003-lsass-event10.png)
 
+### Detection Fire — T1059.001 / T1218 (LOLBin via Event 4688)
+
+Security Event 4688 caught four LOLBin simulation events across three MITRE techniques — `rundll32.exe javascript:`, `mshta.exe vbscript:Execute`, and `powershell.exe -EncodedCommand` — all under account `kitav` with full command lines populated. Zero false positives after allowlisting Splunk and machine accounts. The encoded PowerShell event fired independently in both the Security log (4688) and Sysmon Event 1, validating dual-source coverage.
+
+[![T1059/T1218 Verification](https://raw.githubusercontent.com/kitavim2-commits/windows-sysmon-splunk-siem-lab/main/screenshots/09-T1059-T1218-lolbin-4688.png)](https://raw.githubusercontent.com/kitavim2-commits/windows-sysmon-splunk-siem-lab/main/screenshots/09-T1059-T1218-lolbin-4688.png)
+
+[![T1059/T1218 Labeled Detection](https://raw.githubusercontent.com/kitavim2-commits/windows-sysmon-splunk-siem-lab/main/screenshots/10-T1059-T1218-lolbin-detection-labeled.png)](https://raw.githubusercontent.com/kitavim2-commits/windows-sysmon-splunk-siem-lab/main/screenshots/10-T1059-T1218-lolbin-detection-labeled.png)
+
 ---
 
 ## 📋 Project Overview
@@ -62,7 +71,7 @@ The lab demonstrates, in a portfolio-ready way, the core SOC analyst workflow: *
 
 ### Core Objectives (Complete ✅)
 
-- [x] Enable Windows native process-creation auditing (Event ID 4688) with command line logging
+- [x] * ~~Enable Event ID 4688 process creation logging~~ — LOLBin detection built ✅
 - [x] Deploy Sysmon with a tuned configuration for enriched endpoint telemetry
 - [x] **Detect adversary persistence (T1547.001 — Registry Run Key)** 🆕
 - [x] Install and configure Splunk Enterprise as a local SIEM
@@ -363,6 +372,46 @@ index=winlogs sourcetype=xmlwineventlog EventCode=10
 See full case study: [`docs/case-studies/T1003.001-LSASS-Memory-Access.md`](docs/case-studies/T1003.001-LSASS-Memory-Access.md)
 
 ---
+### T1059.001 / T1218 — LOLBin Execution via Event 4688 — VERIFIED ✅
+
+Detects LOLBin abuse and encoded PowerShell via Windows Security Event 4688 process creation. Covers `rundll32.exe` javascript/VBScript execution, `mshta.exe` inline script, `certutil.exe` download/decode, and PowerShell `-EncodedCommand` — all via `Process_Command_Line` pattern matching. Also provides independent dual-source coverage for T1059.001 alongside Detection #1 (Sysmon Event 1).
+
+> **Sourcetype note:** Security log events use `sourcetype="WinEventLog:Security"` — not `xmlwineventlog`. Requires `ProcessCreationIncludeCmdLine_Enabled=1` registry key for command line population.
+
+```spl
+index=winlogs sourcetype="WinEventLog:Security" EventCode=4688
+| where NOT match(Account_Name, "(?i)(splunkd|SYSTEM|LOCAL SERVICE|NETWORK SERVICE|DWM-|UMFD-)")
+| where NOT match(Account_Name, "\$$")
+| eval proc=lower(New_Process_Name)
+| eval cmdline=lower(Process_Command_Line)
+| eval detection=case(
+    match(cmdline, "(-enc|-encodedcommand|-e\s+[a-z0-9+/=]{20,})"),
+        "T1059.001 — PowerShell encoded command",
+    match(proc, "mshta\.exe") AND match(cmdline, "(vbscript|javascript|http)"),
+        "T1218.005 — MSHTA LOLBin",
+    match(proc, "rundll32\.exe") AND match(cmdline, "(javascript|vbscript|\.dll,)"),
+        "T1218.011 — Rundll32 LOLBin",
+    match(proc, "certutil\.exe") AND match(cmdline, "(-decode|-encode|-urlcache|-ping)"),
+        "T1105/T1140 — Certutil abuse",
+    match(proc, "regsvr32\.exe") AND match(cmdline, "(/s|/u|http|scrobj)"),
+        "T1218.010 — Regsvr32 LOLBin",
+    match(proc, "(wscript|cscript)\.exe") AND match(cmdline, "\.(js|vbs|wsf|hta)"),
+        "T1059.005 — Script interpreter",
+    match(proc, "msiexec\.exe") AND match(cmdline, "(http|/q|/quiet)"),
+        "T1218.007 — Msiexec remote payload",
+    match(proc, "bitsadmin\.exe") AND match(cmdline, "(transfer|download|addfile)"),
+        "T1197 — BITSAdmin download",
+    true(), null()
+  )
+| where isnotnull(detection)
+| table _time, Account_Name, Creator_Process_Name, New_Process_Name, Process_Command_Line, detection
+| sort -_time
+
+```
+
+See full case study: [`docs/case-studies/T1059-T1218-LOLBin-4688.md`](docs/case-studies/T1059-T1218-LOLBin-4688.md)
+
+---
 ## 🎯 Key Event IDs Reference
 
 | Event ID | Source | Meaning |
@@ -377,6 +426,8 @@ See full case study: [`docs/case-studies/T1003.001-LSASS-Memory-Access.md`](docs
 | Sysmon 11 | Sysmon Operational | File created |
 | Sysmon 22 | Sysmon Operational | DNS query |
 | Sysmon 10 | Sysmon Operational | Process access (LSASS credential dumping) |
+| Security 4688 | WinEventLog:Security | Process creation with full command line (LOLBin, encoded PS) |
+| Security 4698 | WinEventLog:Security | Scheduled task created (pending — Detection #6) |
 
 ---
 
