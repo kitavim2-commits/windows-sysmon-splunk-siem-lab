@@ -10,6 +10,8 @@
 ![ATT&CK 1](https://img.shields.io/badge/MITRE%20ATT%26CK-T1059.001-red)
 ![ATT&CK 2](https://img.shields.io/badge/MITRE%20ATT%26CK-T1547.001-red)
 ![ATT&CK 3](https://img.shields.io/badge/MITRE%20ATT%26CK-T1071.001-red)
+[![ATT&CK 4](https://img.shields.io/badge/MITRE%20ATT%26CK-T1003.001-red)](https://attack.mitre.org/techniques/T1003/001/)
+
 ---
 
 ## 📸 Visual Evidence
@@ -44,6 +46,12 @@ Statistical detection of beacon-style DNS traffic: 20 queries with unique subdom
 
 ![T1071 Detection Fire](https://raw.githubusercontent.com/kitavim2-commits/windows-sysmon-splunk-siem-lab/main/screenshots/07-detection-fire-T1071-beaconing)
 
+### Detection Fire — T1003.001 (LSASS Memory Access)
+
+Sysmon Event ID 10 caught PowerShell opening a handle to `lsass.exe` with `GrantedAccess: 0x1410` — the Mimikatz `sekurlsa` access mask. The allowlist-filtered query returned exactly the two simulation events with zero false positives. `splunkd.exe` (0x1fffff) and `svchost.exe` (0x1000) were identified and suppressed during baseline collection.
+
+[![T1003 Detection Fire](https://raw.githubusercontent.com/kitavim2-commits/windows-sysmon-splunk-siem-lab/main/screenshots/08-T1003-lsass-event10.png)](https://raw.githubusercontent.com/kitavim2-commits/windows-sysmon-splunk-siem-lab/main/screenshots/08-T1003-lsass-event10.png)
+
 ---
 
 ## 📋 Project Overview
@@ -63,6 +71,7 @@ The lab demonstrates, in a portfolio-ready way, the core SOC analyst workflow: *
 - [x] **Generate adversary telemetry and successfully detect it in Splunk** 🎯
 - [x] Document the workflow for reproducibility and portfolio use
 - [x] **Detect adversary C2 beaconing (T1071.001 — DNS)** 🆕
+
 
 ---
 
@@ -321,6 +330,39 @@ index=winlogs sourcetype=xmlwineventlog EventCode=22 earliest=-10m
 See full case study: [`docs/case-studies/T1071-001-dns-beaconing.md`](docs/case-studies/T1071-001-dns-beaconing.md)
 
 ---
+### T1003.001 — LSASS Memory Access — VERIFIED ✅
+
+Detects non-system processes opening handles to `lsass.exe` with access masks associated with credential dumping tools. `GrantedAccess` bitmask fingerprints the tool regardless of binary name — making name-based evasion ineffective.
+
+> **Config requirement:** SwiftOnSecurity's default config disables Event 10 (empty include group = log nothing). Add this rule to `sysmonconfig-export.xml` before using this detection:
+> ```xml
+> <ProcessAccess onmatch="include">
+>     <TargetImage condition="is">C:\Windows\system32\lsass.exe</TargetImage>
+> </ProcessAccess>
+> ```
+
+```spl
+index=winlogs sourcetype=xmlwineventlog EventCode=10
+| where like(TargetImage, "%lsass.exe")
+| where NOT match(SourceImage, "(?i)(splunkd|svchost|MsMpEng|mbam|malwarebytes|csrss|werfault|WerFaultSecure|SecurityHealth|lsass|taskmgr|procexp)")
+| eval access_hex=lower(GrantedAccess)
+| eval access_label=case(
+    access_hex="0x1fffff", "PROCESS_ALL_ACCESS — high suspicion",
+    access_hex="0x1438",   "Mimikatz sekurlsa signature",
+    access_hex="0x143a",   "Mimikatz variant",
+    access_hex="0x1410",   "Mimikatz sekurlsa signature",
+    access_hex="0x1010",   "Mimikatz sekurlsa signature",
+    access_hex="0x0040",   "PROCESS_VM_READ only",
+    true(),                "Unknown mask — review: ".GrantedAccess
+  )
+| where access_label!="Unknown mask — review: ".GrantedAccess
+| table _time, SourceImage, TargetImage, GrantedAccess, access_label, CallTrace
+| sort -_time
+```
+
+See full case study: [`docs/case-studies/T1003.001-LSASS-Memory-Access.md`](docs/case-studies/T1003.001-LSASS-Memory-Access.md)
+
+---
 ## 🎯 Key Event IDs Reference
 
 | Event ID | Source | Meaning |
@@ -334,6 +376,7 @@ See full case study: [`docs/case-studies/T1071-001-dns-beaconing.md`](docs/case-
 | Sysmon 10 | Sysmon Operational | Process access |
 | Sysmon 11 | Sysmon Operational | File created |
 | Sysmon 22 | Sysmon Operational | DNS query |
+| Sysmon 10 | Sysmon Operational | Process access (LSASS credential dumping) |
 
 ---
 
@@ -354,9 +397,9 @@ See full case study: [`docs/case-studies/T1071-001-dns-beaconing.md`](docs/case-
 
 - [x] Stand up logging and SIEM
 - [x] Validate first detection against simulated TTP
-- [ ] Install **Splunk Add-on for Microsoft Sysmon** for clean field extraction
-- [ ] Build a **Splunk dashboard** for real-time endpoint visibility
-- [ ] Run a broader Atomic Red Team campaign (T1003 credential access, T1547 persistence) and validate detections
+- [x] Install **Splunk Add-on for Microsoft Sysmon** for clean field extraction
+- [x] Build a **Splunk dashboard** for real-time endpoint visibility
+- [x] * ~~Run a broader Atomic Red Team campaign~~ T1003.001 LSASS credential access — detected 
 - [ ] Author **Sigma rules** for each detection and convert to SPL
 - [ ] Deploy a **Universal Forwarder** to a second VM for multi-host ingestion
 - [ ] Integrate **threat intelligence feeds** (MISP, OTX IOCs) via Splunk lookups
