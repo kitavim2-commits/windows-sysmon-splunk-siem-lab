@@ -451,7 +451,6 @@ See full case study: [`docs/case-studies/T1059-T1218-LOLBin-4688.md`](docs/case-
 - [x] Install **Splunk Add-on for Microsoft Sysmon** for clean field extraction
 - [x] Build a **Splunk dashboard** for real-time endpoint visibility
 - [x] * ~~Run a broader Atomic Red Team campaign~~ T1003.001 LSASS credential access — detected 
-- [ ] Author **Sigma rules** for each detection and convert to SPL
 - [ ] Deploy a **Universal Forwarder** to a second VM for multi-host ingestion
 - [ ] Integrate **threat intelligence feeds** (MISP, OTX IOCs) via Splunk lookups
 - [ ] Move to **Olaf Hartong's modular Sysmon config** for more granular tuning
